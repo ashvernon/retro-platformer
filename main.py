@@ -357,7 +357,7 @@ def main():
         keep_from_x = camera_x - DESPAWN_BEHIND_PX
         ground_chunks = [g for g in ground_chunks if g.right > keep_from_x]
         floating_platforms = [p for p in floating_platforms if p.right > keep_from_x]
-        alive_platforms = set(ground_chunks + floating_platforms)
+        alive_platforms = ground_chunks + floating_platforms
         enemies = [e for e in enemies if e.platform in alive_platforms and e.platform.right > keep_from_x]
         platforms = ground_chunks + floating_platforms
 
