@@ -20,6 +20,7 @@ Nice-to-have:
 """
 
 import os
+import random
 import sys
 import time
 import warnings
@@ -48,6 +49,7 @@ JUMP_VELOCITY = -760.0
 MAX_FALL_SPEED = 1600.0
 
 ENEMY_BOUNCE = -520.0
+INVULN_DURATION = 1.0
 
 # IMPORTANT: set this correctly based on your art.
 # If your side.png shows the character facing RIGHT, leave as "right".
@@ -55,6 +57,13 @@ ENEMY_BOUNCE = -520.0
 SIDE_SPRITE_FACES = "left"  # or "right"
 
 TARGET_HEIGHT = 56
+
+SPAWN_AHEAD_PX = 1200
+DESPAWN_BEHIND_PX = 400
+GROUND_CHUNK_W = 620
+PLATFORM_HEIGHTS = [0, 80, 120, 170, 220]
+PLATFORM_WIDTHS = [140, 180, 220, 260]
+PLATFORM_GAPS = (90, 170)
 
 # --- Portable paths relative to this file ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -156,7 +165,7 @@ class Player:
             return self.spr_right
         return self.spr_front
 
-    def draw(self, screen):
+    def draw(self, screen, camera_x: float = 0.0):
         spr = self.sprite()
 
         # shadow under feet
@@ -164,10 +173,10 @@ class Player:
         shadow_h = 10
         shadow = pygame.Surface((int(shadow_w), shadow_h), pygame.SRCALPHA)
         pygame.draw.ellipse(shadow, (0, 0, 0, 90), shadow.get_rect())
-        screen.blit(shadow, (self.x - shadow_w / 2, self.y - shadow_h / 2))
+        screen.blit(shadow, (self.x - shadow_w / 2 - camera_x, self.y - shadow_h / 2))
 
         # sprite anchored at feet (bottom-center)
-        screen.blit(spr, (self.x - spr.get_width() / 2, self.y - spr.get_height()))
+        screen.blit(spr, (self.x - spr.get_width() / 2 - camera_x, self.y - spr.get_height()))
 
 
 # ----------------------------
@@ -192,21 +201,22 @@ def main():
         pygame.quit()
         sys.exit(1)
 
-    # Platforms
+    # Platforms + endless generation state
     GROUND_Y = WIN_H - 90
-    platforms = [
-        pygame.Rect(0, GROUND_Y, WIN_W, 200),
-        pygame.Rect(140, GROUND_Y - 80, 220, 18),
-        pygame.Rect(430, GROUND_Y - 150, 200, 18),
-        pygame.Rect(700, GROUND_Y - 230, 180, 18),
-        pygame.Rect(560, GROUND_Y - 40, 140, 18),
-    ]
+    rng = random.Random(1234)
+
+    ground_chunks: list[pygame.Rect] = [pygame.Rect(0, GROUND_Y, WIN_W, 200)]
+    floating_platforms: list[pygame.Rect] = []
+    platforms: list[pygame.Rect] = ground_chunks + floating_platforms
+
+    next_ground_x = GROUND_CHUNK_W
+    next_platform_x = WIN_W + 180
 
     player = Player(x=120, y=GROUND_Y, spr_front=spr_front, spr_back=spr_back, spr_side=spr_side)
-    enemies = [
-        Enemy(x=platforms[1].centerx, y=platforms[1].top, direction=1),
-        Enemy(x=platforms[3].centerx, y=platforms[3].top, direction=-1),
-    ]
+    enemies: list[Enemy] = []
+
+    camera_x = 0.0
+    invuln_timer = 0.0
 
     # --- Event-based input flags (prevents phantom drift)
     moving_left = False
@@ -224,6 +234,7 @@ def main():
         dt = clock.tick(FPS) / 1000.0
         dt = min(dt, 1/30)
         prev_player_bottom = player.y
+        invuln_timer = max(0.0, invuln_timer - dt)
 
         # Janeway Mode boosts
         speed_mult = 1.35 if janeway_mode else 1.0
@@ -315,8 +326,40 @@ def main():
         dy = player.vy * dt
         move_and_collide(player, platforms, dx, dy)
 
-        # Clamp within screen
-        player.x = clamp(player.x, player.w // 2, WIN_W - player.w // 2)
+        # Camera follows player with light smoothing
+        target_cam_x = max(player.x - WIN_W * 0.35, 0)
+        camera_x += (target_cam_x - camera_x) * 0.12
+
+        # World generation: extend ground seamlessly
+        while next_ground_x < camera_x + SPAWN_AHEAD_PX:
+            chunk = pygame.Rect(next_ground_x, GROUND_Y, GROUND_CHUNK_W, 200)
+            ground_chunks.append(chunk)
+            next_ground_x += GROUND_CHUNK_W
+
+        # Floating platforms and enemies
+        while next_platform_x < camera_x + SPAWN_AHEAD_PX:
+            gap = rng.randint(*PLATFORM_GAPS)
+            next_platform_x += gap
+            width = rng.choice(PLATFORM_WIDTHS)
+            height = rng.choice(PLATFORM_HEIGHTS)
+            plat_y = max(GROUND_Y - height, 120)
+            platform = pygame.Rect(next_platform_x, plat_y, width, 18)
+            floating_platforms.append(platform)
+
+            if rng.random() < 0.45:
+                enemies.append(Enemy(platform=platform, direction=rng.choice([-1, 1])))
+
+            next_platform_x = platform.right
+
+        platforms = ground_chunks + floating_platforms
+
+        # Despawn behind camera
+        keep_from_x = camera_x - DESPAWN_BEHIND_PX
+        ground_chunks = [g for g in ground_chunks if g.right > keep_from_x]
+        floating_platforms = [p for p in floating_platforms if p.right > keep_from_x]
+        alive_platforms = set(ground_chunks + floating_platforms)
+        enemies = [e for e in enemies if e.platform in alive_platforms and e.platform.right > keep_from_x]
+        platforms = ground_chunks + floating_platforms
 
         # Enemies
         for enemy in enemies:
@@ -328,32 +371,43 @@ def main():
         for enemy in enemies:
             e_rect = enemy.rect()
             if player_rect.colliderect(e_rect):
-                if prev_player_bottom <= e_rect.top and player.vy >= 0:
+                stomped = prev_player_bottom <= e_rect.top and player.vy >= 0
+                if stomped:
                     player.y = e_rect.top
                     player.vy = ENEMY_BOUNCE
                     player.on_ground = False
                     continue
+                if invuln_timer <= 0.0:
+                    knock_dir = -1 if player.x < enemy.x else 1
+                    player.vx = knock_dir * MOVE_SPEED * 0.9
+                    player.vy = JUMP_VELOCITY * 0.6
+                    player.on_ground = False
+                    invuln_timer = INVULN_DURATION
             surviving_enemies.append(enemy)
         enemies = surviving_enemies
 
         # Draw
-        screen.fill((18, 18, 26))
-        pygame.draw.rect(screen, (20, 20, 30), (0, 0, WIN_W, WIN_H // 2))
-        pygame.draw.circle(screen, (240, 240, 255), (780, 90), 26)
+        draw_parallax(screen, camera_x)
 
-        for p in platforms:
-            col = (35, 45, 35) if p.y >= GROUND_Y else (55, 75, 55)
-            pygame.draw.rect(screen, col, p)
-            pygame.draw.rect(screen, (20, 25, 20), p, 2)
+        for p in ground_chunks:
+            display_rect = p.move(-camera_x, 0)
+            pygame.draw.rect(screen, (40, 40, 50), display_rect)
+            pygame.draw.rect(screen, (25, 25, 30), display_rect, 2)
+
+        for p in floating_platforms:
+            display_rect = p.move(-camera_x, 0)
+            col = (70, 90, 70)
+            pygame.draw.rect(screen, col, display_rect)
+            pygame.draw.rect(screen, (30, 40, 30), display_rect, 2)
 
         for enemy in enemies:
-            enemy.draw(screen)
+            enemy.draw(screen, camera_x)
 
-        player.draw(screen)
+        player.draw(screen, camera_x)
 
         hud = (
-            f"move_dir={move_dir} vx={player.vx:.1f} vy={player.vy:.1f} "
-            f"on_ground={player.on_ground} facing={player.facing} side_faces={SIDE_SPRITE_FACES}"
+            f"x={player.x:.1f} cam={camera_x:.1f} vx={player.vx:.1f} vy={player.vy:.1f} "
+            f"ground={player.on_ground} invuln={invuln_timer:.2f}"
         )
         screen.blit(font.render(hud, True, (230, 230, 230)), (10, 10))
 
@@ -363,6 +417,35 @@ def main():
         pygame.display.flip()
 
     pygame.quit()
+
+
+def draw_parallax(screen, camera_x: float):
+    sky = (12, 14, 20)
+    horizon = (24, 26, 36)
+    screen.fill(sky)
+    pygame.draw.rect(screen, horizon, (0, 0, WIN_W, WIN_H // 2))
+
+    # layer speeds
+    moon_x = (800 - camera_x * 0.05) % (WIN_W + 200) - 100
+    pygame.draw.circle(screen, (240, 240, 255), (int(moon_x), 90), 26)
+
+    # stars
+    rng = random.Random(42)
+    for i in range(36):
+        star_x = (rng.randint(0, WIN_W) - camera_x * 0.1 + i * 40) % (WIN_W + 80) - 40
+        star_y = rng.randint(10, WIN_H // 2 - 40)
+        pygame.draw.circle(screen, (210, 210, 230), (int(star_x), star_y), 2)
+
+    # distant silhouettes
+    base_x = - (camera_x * 0.25) % (WIN_W + 140)
+    for i in range(-1, 4):
+        hill_rect = pygame.Rect(base_x + i * 320, WIN_H // 2 + 40, 240, 120)
+        pygame.draw.ellipse(screen, (28, 34, 44), hill_rect)
+
+    mid_x = - (camera_x * 0.45) % (WIN_W + 200)
+    for i in range(-1, 5):
+        mound = pygame.Rect(mid_x + i * 220, WIN_H // 2 + 70, 180, 90)
+        pygame.draw.ellipse(screen, (34, 44, 58), mound)
 
 
 if __name__ == "__main__":
