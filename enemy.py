@@ -6,9 +6,10 @@ ENEMY_SPEED = 120.0
 
 
 class Enemy:
-    def __init__(self, x: float, y: float, direction: int = 1):
-        self.x = float(x)
-        self.y = float(y)  # feet y (bottom)
+    def __init__(self, platform: pygame.Rect, direction: int = 1):
+        self.platform = platform
+        self.x = float(platform.centerx)
+        self.y = float(platform.top)  # feet y (bottom)
         self.vx = ENEMY_SPEED * direction
         self.vy = 0.0
         self.w = 40
@@ -31,12 +32,15 @@ class Enemy:
         prev_x = self.x
         move_and_collide(self, platforms, dx, dy)
 
-        # Patrol reversal: if we hit a wall or failed to move much, flip direction
+        # Patrol reversal: if we hit a wall, fell off, or failed to move much, flip direction
         moved_x = self.x - prev_x
-        if abs(moved_x) < abs(dx) * 0.5:
+        fallen_off = not self.platform.collidepoint(self.x, self.platform.top - 1)
+        at_edge = (self.x < self.platform.left + 8) or (self.x > self.platform.right - 8)
+        if abs(moved_x) < abs(dx) * 0.5 or fallen_off or at_edge:
             desired_dir *= -1
 
         self.vx = ENEMY_SPEED * desired_dir
+        self.y = float(self.platform.top)
 
     def draw(self, screen, camera_x: float = 0.0):
         r = self.rect()
