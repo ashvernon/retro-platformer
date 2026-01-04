@@ -29,6 +29,9 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API
 
 import pygame  # noqa: E402
 
+from enemy import Enemy
+from physics import move_and_collide
+
 
 # ----------------------------
 # Config
@@ -43,6 +46,8 @@ FRICTION_GROUND = 4200.0
 GRAVITY = 2200.0
 JUMP_VELOCITY = -760.0
 MAX_FALL_SPEED = 1600.0
+
+ENEMY_BOUNCE = -520.0
 
 # IMPORTANT: set this correctly based on your art.
 # If your side.png shows the character facing RIGHT, leave as "right".
@@ -166,40 +171,6 @@ class Player:
 
 
 # ----------------------------
-# Collision
-# ----------------------------
-def move_and_collide(player: Player, platforms: list[pygame.Rect], dx: float, dy: float):
-    r = player.rect()
-
-    # Horizontal
-    r.x += int(round(dx))
-    for p in platforms:
-        if r.colliderect(p):
-            if dx > 0:
-                r.right = p.left
-            elif dx < 0:
-                r.left = p.right
-            player.vx = 0.0
-
-    # Vertical
-    r.y += int(round(dy))
-    landed = False
-    for p in platforms:
-        if r.colliderect(p):
-            if dy > 0:  # falling
-                r.bottom = p.top
-                player.vy = 0.0
-                landed = True
-            elif dy < 0:  # rising
-                r.top = p.bottom
-                player.vy = 0.0
-
-    player.x = float(r.centerx)
-    player.y = float(r.bottom)
-    player.on_ground = landed
-
-
-# ----------------------------
 # Main
 # ----------------------------
 def main():
@@ -232,6 +203,10 @@ def main():
     ]
 
     player = Player(x=120, y=GROUND_Y, spr_front=spr_front, spr_back=spr_back, spr_side=spr_side)
+    enemies = [
+        Enemy(x=platforms[1].centerx, y=platforms[1].top, direction=1),
+        Enemy(x=platforms[3].centerx, y=platforms[3].top, direction=-1),
+    ]
 
     # --- Event-based input flags (prevents phantom drift)
     moving_left = False
@@ -248,6 +223,7 @@ def main():
     while running:
         dt = clock.tick(FPS) / 1000.0
         dt = min(dt, 1/30)
+        prev_player_bottom = player.y
 
         # Janeway Mode boosts
         speed_mult = 1.35 if janeway_mode else 1.0
@@ -342,6 +318,24 @@ def main():
         # Clamp within screen
         player.x = clamp(player.x, player.w // 2, WIN_W - player.w // 2)
 
+        # Enemies
+        for enemy in enemies:
+            enemy.update(platforms, dt, GRAVITY, MAX_FALL_SPEED)
+
+        # Player vs enemies (stomp to defeat)
+        player_rect = player.rect()
+        surviving_enemies = []
+        for enemy in enemies:
+            e_rect = enemy.rect()
+            if player_rect.colliderect(e_rect):
+                if prev_player_bottom <= e_rect.top and player.vy >= 0:
+                    player.y = e_rect.top
+                    player.vy = ENEMY_BOUNCE
+                    player.on_ground = False
+                    continue
+            surviving_enemies.append(enemy)
+        enemies = surviving_enemies
+
         # Draw
         screen.fill((18, 18, 26))
         pygame.draw.rect(screen, (20, 20, 30), (0, 0, WIN_W, WIN_H // 2))
@@ -351,6 +345,9 @@ def main():
             col = (35, 45, 35) if p.y >= GROUND_Y else (55, 75, 55)
             pygame.draw.rect(screen, col, p)
             pygame.draw.rect(screen, (20, 25, 20), p, 2)
+
+        for enemy in enemies:
+            enemy.draw(screen)
 
         player.draw(screen)
 
